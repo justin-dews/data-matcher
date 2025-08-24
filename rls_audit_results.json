@@ -1,0 +1,117 @@
+{
+  "timestamp": "2025-08-24T01:42:35.750Z",
+  "tables": {
+    "organizations": {
+      "exists": true,
+      "row_count": 1,
+      "has_organization_id": true,
+      "rls_enabled": true,
+      "policies": [],
+      "issues": [],
+      "org_distribution": {}
+    },
+    "profiles": {
+      "exists": true,
+      "row_count": 1,
+      "has_organization_id": true,
+      "rls_enabled": true,
+      "policies": [],
+      "issues": [],
+      "org_distribution": {
+        "00000000-0000-0000-0000-000000000001": 1
+      }
+    },
+    "products": {
+      "exists": true,
+      "row_count": 92,
+      "has_organization_id": true,
+      "rls_enabled": true,
+      "policies": [],
+      "issues": [],
+      "org_distribution": {
+        "00000000-0000-0000-0000-000000000001": 92
+      }
+    },
+    "documents": {
+      "exists": true,
+      "row_count": 14,
+      "has_organization_id": true,
+      "rls_enabled": true,
+      "policies": [],
+      "issues": [],
+      "org_distribution": {
+        "00000000-0000-0000-0000-000000000001": 14
+      }
+    },
+    "line_items": {
+      "exists": true,
+      "row_count": 702,
+      "has_organization_id": true,
+      "rls_enabled": true,
+      "policies": [],
+      "issues": [],
+      "org_distribution": {
+        "00000000-0000-0000-0000-000000000001": 702
+      }
+    },
+    "matches": {
+      "exists": true,
+      "row_count": 0,
+      "has_organization_id": true,
+      "rls_enabled": true,
+      "policies": [],
+      "issues": [],
+      "org_distribution": {}
+    },
+    "competitor_aliases": {
+      "exists": true,
+      "row_count": 0,
+      "has_organization_id": true,
+      "rls_enabled": true,
+      "policies": [],
+      "issues": [],
+      "org_distribution": {}
+    },
+    "product_embeddings": {
+      "exists": true,
+      "row_count": 92,
+      "has_organization_id": true,
+      "rls_enabled": true,
+      "policies": [],
+      "issues": [],
+      "org_distribution": {}
+    },
+    "activity_log": {
+      "exists": true,
+      "row_count": 0,
+      "has_organization_id": true,
+      "rls_enabled": true,
+      "policies": [],
+      "issues": [],
+      "org_distribution": {}
+    },
+    "settings": {
+      "exists": true,
+      "row_count": 0,
+      "has_organization_id": true,
+      "rls_enabled": true,
+      "policies": [],
+      "issues": [],
+      "org_distribution": {}
+    }
+  },
+  "summary": {
+    "total_tables": 10,
+    "rls_enabled": 10,
+    "has_org_id": 10,
+    "critical_issues": [],
+    "recommendations": []
+  },
+  "generated_at": "2025-08-24T01:42:45.363Z",
+  "next_steps": [
+    "Fix RLS policies on tables with existing organization_id columns",
+    "Add organization_id columns to tables that are missing them",
+    "Create proper RLS policies for multi-tenant isolation",
+    "Test data access with corrected policies"
+  ]
+}

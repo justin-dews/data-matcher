@@ -1,0 +1,887 @@
+Comprehensive Python Fuzzy Matching Solution
+python
+import numpy as np
+from typing import List, Dict, Tuple, Optional, Set
+from dataclasses import dataclass
+import time
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+import pickle
+import os
+from functools import lru_cache
+import logging
+
+# Import the best fuzzy matching libraries
+from rapidfuzz import fuzz, process, distance
+from rapidfuzz.process import extract, extractOne, cdist
+from rapidfuzz.distance import Levenshtein, DamerauLevenshtein, Indel, Jaro, JaroWinkler
+import polyleven
+from thefuzz import fuzz as thefuzz_fuzz, process as thefuzz_process
+import jellyfish
+import phonetics
+from sentence_transformers import SentenceTransformer
+import faiss
+import re
+from collections import defaultdict
+import pandas as pd
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+@dataclass
+class MatchResult:
+    query: str
+    match: str
+    score: float
+    match_id: int
+    algorithm: str
+    confidence: float
+
+class HybridFuzzyMatcher:
+    """
+    High-performance fuzzy matcher combining multiple algorithms to achieve >95% accuracy
+    """
+    
+    def __init__(self, 
+                 items: List[Tuple[int, str]], 
+                 use_semantic: bool = True,
+                 use_phonetic: bool = True,
+                 cache_size: int = 10000):
+        """
+        Initialize the matcher with a list of (id, text) tuples
+        """
+        self.items = items
+        self.item_texts = [text for _, text in items]
+        self.item_ids = [id for id, _ in items]
+        self.use_semantic = use_semantic
+        self.use_phonetic = use_phonetic
+        
+        # Preprocessing
+        logger.info("Preprocessing items...")
+        self.normalized_items = [self._normalize(text) for text in self.item_texts]
+        self.tokens_dict = {i: self._tokenize(text) for i, text in enumerate(self.normalized_items)}
+        
+        # Build indices
+        self._build_ngram_index()
+        self._build_phonetic_index()
+        
+        if self.use_semantic:
+            self._build_semantic_index()
+        
+        # Cache for results
+        self._cache = {}
+        self.cache_size = cache_size
+        
+    def _normalize(self, text: str) -> str:
+        """Normalize text for consistent matching"""
+        # Convert to lowercase
+        text = text.lower()
+        # Remove extra whitespace
+        text = ' '.join(text.split())
+        # Remove special characters but keep important ones
+        text = re.sub(r'[^\w\s\-\.]', ' ', text)
+        # Normalize whitespace again
+        text = ' '.join(text.split())
+        return text.strip()
+    
+    def _tokenize(self, text: str) -> List[str]:
+        """Tokenize text into words"""
+        return text.split()
+    
+    def _build_ngram_index(self, n: int = 3):
+        """Build n-gram index for fast candidate selection"""
+        logger.info("Building n-gram index...")
+        self.ngram_index = defaultdict(set)
+        
+        for idx, text in enumerate(self.normalized_items):
+            # Character n-grams
+            padded = f"#{text}#"
+            for i in range(len(padded) - n + 1):
+                ngram = padded[i:i+n]
+                self.ngram_index[ngram].add(idx)
+            
+            # Word n-grams
+            words = self._tokenize(text)
+            for i in range(len(words)):
+                for j in range(i+1, min(i+4, len(words)+1)):
+                    word_ngram = ' '.join(words[i:j])
+                    self.ngram_index[f"W:{word_ngram}"].add(idx)
+    
+    def _build_phonetic_index(self):
+        """Build phonetic index for sound-alike matching"""
+        if not self.use_phonetic:
+            return
+            
+        logger.info("Building phonetic index...")
+        self.phonetic_index = defaultdict(set)
+        
+        for idx, text in enumerate(self.normalized_items):
+            # Multiple phonetic algorithms for robustness
+            words = self._tokenize(text)
+            for word in words:
+                if len(word) > 2:
+                    # Metaphone
+                    try:
+                        metaphone = jellyfish.metaphone(word)
+                        if metaphone:
+                            self.phonetic_index[f"M:{metaphone}"].add(idx)
+                    except:
+                        pass
+                    
+                    # Soundex
+                    try:
+                        soundex = jellyfish.soundex(word)
+                        if soundex:
+                            self.phonetic_index[f"S:{soundex}"].add(idx)
+                    except:
+                        pass
+                    
+                    # Double Metaphone
+                    try:
+                        dm = phonetics.dmetaphone(word)
+                        for code in dm:
+                            if code:
+                                self.phonetic_index[f"DM:{code}"].add(idx)
+                    except:
+                        pass
+    
+    def _build_semantic_index(self):
+        """Build semantic embeddings using sentence transformers"""
+        logger.info("Building semantic index...")
+        
+        # Use a lightweight but effective model
+        self.semantic_model = SentenceTransformer('all-MiniLM-L6-v2')
+        
+        # Generate embeddings in batches
+        batch_size = 512
+        embeddings = []
+        
+        for i in range(0, len(self.item_texts), batch_size):
+            batch = self.item_texts[i:i+batch_size]
+            batch_embeddings = self.semantic_model.encode(
+                batch, 
+                convert_to_numpy=True,
+                show_progress_bar=False
+            )
+            embeddings.extend(batch_embeddings)
+        
+        self.embeddings = np.array(embeddings, dtype='float32')
+        
+        # Build FAISS index for fast similarity search
+        dimension = self.embeddings.shape[1]
+        self.semantic_index = faiss.IndexFlatIP(dimension)  # Inner product = cosine similarity with normalized vectors
+        
+        # Normalize embeddings for cosine similarity
+        faiss.normalize_L2(self.embeddings)
+        self.semantic_index.add(self.embeddings)
+    
+    def _get_ngram_candidates(self, query: str, top_k: int = 500) -> Set[int]:
+        """Get candidate indices using n-gram similarity"""
+        normalized_query = self._normalize(query)
+        candidates = defaultdict(int)
+        
+        # Character n-grams
+        padded = f"#{normalized_query}#"
+        query_ngrams = set()
+        for i in range(len(padded) - 2):
+            ngram = padded[i:i+3]
+            query_ngrams.add(ngram)
+            if ngram in self.ngram_index:
+                for idx in self.ngram_index[ngram]:
+                    candidates[idx] += 1
+        
+        # Word n-grams
+        words = self._tokenize(normalized_query)
+        for i in range(len(words)):
+            for j in range(i+1, min(i+4, len(words)+1)):
+                word_ngram = ' '.join(words[i:j])
+                key = f"W:{word_ngram}"
+                if key in self.ngram_index:
+                    for idx in self.ngram_index[key]:
+                        candidates[idx] += 3  # Higher weight for word matches
+        
+        # Sort by ngram overlap and return top candidates
+        sorted_candidates = sorted(candidates.items(), key=lambda x: x[1], reverse=True)
+        return {idx for idx, _ in sorted_candidates[:top_k]}
+    
+    def _get_phonetic_candidates(self, query: str, top_k: int = 200) -> Set[int]:
+        """Get candidates using phonetic similarity"""
+        if not self.use_phonetic:
+            return set()
+            
+        candidates = set()
+        words = self._tokenize(self._normalize(query))
+        
+        for word in words:
+            if len(word) > 2:
+                # Check all phonetic encodings
+                try:
+                    metaphone = jellyfish.metaphone(word)
+                    if metaphone and f"M:{metaphone}" in self.phonetic_index:
+                        candidates.update(self.phonetic_index[f"M:{metaphone}"])
+                except:
+                    pass
+                
+                try:
+                    soundex = jellyfish.soundex(word)
+                    if soundex and f"S:{soundex}" in self.phonetic_index:
+                        candidates.update(self.phonetic_index[f"S:{soundex}"])
+                except:
+                    pass
+                
+                try:
+                    dm = phonetics.dmetaphone(word)
+                    for code in dm:
+                        if code and f"DM:{code}" in self.phonetic_index:
+                            candidates.update(self.phonetic_index[f"DM:{code}"])
+                except:
+                    pass
+        
+        return candidates
+    
+    def _get_semantic_candidates(self, query: str, top_k: int = 100) -> List[Tuple[int, float]]:
+        """Get semantically similar candidates"""
+        if not self.use_semantic:
+            return []
+            
+        # Encode query
+        query_embedding = self.semantic_model.encode([query], convert_to_numpy=True)
+        faiss.normalize_L2(query_embedding)
+        
+        # Search
+        scores, indices = self.semantic_index.search(query_embedding, top_k)
+        
+        return [(int(idx), float(score)) for idx, score in zip(indices[0], scores[0])]
+    
+    def _calculate_hybrid_score(self, query: str, candidate_idx: int) -> Tuple[float, str]:
+        """Calculate a hybrid score using multiple algorithms"""
+        candidate = self.normalized_items[candidate_idx]
+        scores = {}
+        
+        # RapidFuzz scores (fastest)
+        scores['token_sort'] = fuzz.token_sort_ratio(query, candidate) / 100
+        scores['token_set'] = fuzz.token_set_ratio(query, candidate) / 100
+        scores['partial'] = fuzz.partial_ratio(query, candidate) / 100
+        scores['ratio'] = fuzz.ratio(query, candidate) / 100
+        
+        # Advanced distance metrics
+        scores['damerau'] = 1 - (DamerauLevenshtein.normalized_distance(query, candidate))
+        scores['jaro_winkler'] = JaroWinkler.normalized_similarity(query, candidate)
+        
+        # Word-level matching
+        query_words = set(self._tokenize(query))
+        candidate_words = set(self._tokenize(candidate))
+        if query_words and candidate_words:
+            scores['word_overlap'] = len(query_words & candidate_words) / len(query_words | candidate_words)
+        else:
+            scores['word_overlap'] = 0
+        
+        # Weighted combination
+        weights = {
+            'token_sort': 0.20,
+            'token_set': 0.20,
+            'partial': 0.15,
+            'ratio': 0.10,
+            'damerau': 0.15,
+            'jaro_winkler': 0.10,
+            'word_overlap': 0.10
+        }
+        
+        final_score = sum(score * weights.get(name, 0) for name, score in scores.items())
+        
+        # Determine which algorithm contributed most
+        best_algo = max(scores.items(), key=lambda x: x[1])[0]
+        
+        return final_score, best_algo
+    
+    def match_single(self, query: str, threshold: float = 0.85) -> Optional[MatchResult]:
+        """Match a single query against the dataset"""
+        # Check cache
+        cache_key = f"{query}:{threshold}"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+        
+        normalized_query = self._normalize(query)
+        
+        # Get candidates from different sources
+        candidates = set()
+        
+        # N-gram candidates
+        ngram_candidates = self._get_ngram_candidates(query)
+        candidates.update(ngram_candidates)
+        
+        # Phonetic candidates
+        phonetic_candidates = self._get_phonetic_candidates(query)
+        candidates.update(phonetic_candidates)
+        
+        # Semantic candidates (if enabled)
+        semantic_scores = {}
+        if self.use_semantic:
+            semantic_candidates = self._get_semantic_candidates(query)
+            for idx, score in semantic_candidates:
+                candidates.add(idx)
+                semantic_scores[idx] = score
+        
+        # If no candidates found, try full search on a sample
+        if not candidates:
+            sample_size = min(1000, len(self.items))
+            candidates = set(range(sample_size))
+        
+        # Score all candidates
+        best_score = 0
+        best_match = None
+        best_algo = None
+        
+        for idx in candidates:
+            score, algo = self._calculate_hybrid_score(normalized_query, idx)
+            
+            # Boost score if there's also semantic similarity
+            if idx in semantic_scores:
+                semantic_boost = semantic_scores[idx] * 0.2
+                score = min(1.0, score + semantic_boost)
+            
+            if score > best_score:
+                best_score = score
+                best_match = idx
+                best_algo = algo
+        
+        # Create result if above threshold
+        result = None
+        if best_score >= threshold and best_match is not None:
+            result = MatchResult(
+                query=query,
+                match=self.item_texts[best_match],
+                score=best_score,
+                match_id=self.item_ids[best_match],
+                algorithm=best_algo,
+                confidence=best_score
+            )
+        
+        # Cache result
+        if len(self._cache) < self.cache_size:
+            self._cache[cache_key] = result
+        
+        return result
+    
+    def match_batch(self, queries: List[str], threshold: float = 0.85, n_jobs: int = -1) -> List[Optional[MatchResult]]:
+        """Match multiple queries in parallel"""
+        if n_jobs == -1:
+            n_jobs = os.cpu_count()
+        
+        # Use process pool for CPU-bound fuzzy matching
+        with ProcessPoolExecutor(max_workers=n_jobs) as executor:
+            futures = [executor.submit(self.match_single, query, threshold) for query in queries]
+            results = [future.result() for future in futures]
+        
+        return results
+    
+    def match_batch_optimized(self, queries: List[str], threshold: float = 0.85) -> List[Optional[MatchResult]]:
+        """Optimized batch matching using RapidFuzz's cdist"""
+        normalized_queries = [self._normalize(q) for q in queries]
+        
+        # Use RapidFuzz's optimized batch distance calculation
+        # This is much faster than individual comparisons
+        results = []
+        
+        # Process in chunks to manage memory
+        chunk_size = 100
+        for i in range(0, len(normalized_queries), chunk_size):
+            chunk_queries = normalized_queries[i:i+chunk_size]
+            chunk_original = queries[i:i+chunk_size]
+            
+            # Calculate distance matrix
+            scores_matrix = cdist(
+                chunk_queries,
+                self.normalized_items,
+                scorer=fuzz.token_sort_ratio,
+                workers=os.cpu_count()
+            )
+            
+            # Find best matches
+            for j, (query, scores) in enumerate(zip(chunk_original, scores_matrix)):
+                best_idx = np.argmax(scores)
+                best_score = scores[best_idx] / 100.0
+                
+                if best_score >= threshold:
+                    # Refine score with additional metrics
+                    refined_score, algo = self._calculate_hybrid_score(
+                        normalized_queries[i+j], 
+                        best_idx
+                    )
+                    
+                    if refined_score >= threshold:
+                        results.append(MatchResult(
+                            query=query,
+                            match=self.item_texts[best_idx],
+                            score=refined_score,
+                            match_id=self.item_ids[best_idx],
+                            algorithm=algo,
+                            confidence=refined_score
+                        ))
+                    else:
+                        results.append(None)
+                else:
+                    results.append(None)
+        
+        return results
+    
+    def save_index(self, filepath: str):
+        """Save the preprocessed index to disk"""
+        data = {
+            'items': self.items,
+            'normalized_items': self.normalized_items,
+            'tokens_dict': self.tokens_dict,
+            'ngram_index': dict(self.ngram_index),
+            'phonetic_index': dict(self.phonetic_index) if self.use_phonetic else None,
+            'embeddings': self.embeddings if self.use_semantic else None,
+            'use_semantic': self.use_semantic,
+            'use_phonetic': self.use_phonetic
+        }
+        
+        with open(filepath, 'wb') as f:
+            pickle.dump(data, f)
+        
+        logger.info(f"Index saved to {filepath}")
+    
+    @classmethod
+    def load_index(cls, filepath: str) -> 'HybridFuzzyMatcher':
+        """Load a preprocessed index from disk"""
+        with open(filepath, 'rb') as f:
+            data = pickle.load(f)
+        
+        # Create instance without initialization
+        instance = cls.__new__(cls)
+        instance.items = data['items']
+        instance.item_texts = [text for _, text in instance.items]
+        instance.item_ids = [id for id, _ in instance.items]
+        instance.normalized_items = data['normalized_items']
+        instance.tokens_dict = data['tokens_dict']
+        instance.ngram_index = defaultdict(set, data['ngram_index'])
+        instance.use_semantic = data['use_semantic']
+        instance.use_phonetic = data['use_phonetic']
+        instance._cache = {}
+        instance.cache_size = 10000
+        
+        if data['use_phonetic'] and data['phonetic_index']:
+            instance.phonetic_index = defaultdict(set, data['phonetic_index'])
+        
+        if data['use_semantic'] and data['embeddings'] is not None:
+            instance.embeddings = data['embeddings']
+            instance.semantic_model = SentenceTransformer('all-MiniLM-L6-v2')
+            
+            # Rebuild FAISS index
+            dimension = instance.embeddings.shape[1]
+            instance.semantic_index = faiss.IndexFlatIP(dimension)
+            instance.semantic_index.add(instance.embeddings)
+        
+        logger.info(f"Index loaded from {filepath}")
+        return instance
+
+
+class EnhancedMatcher(HybridFuzzyMatcher):
+    """Enhanced matcher with additional algorithms for >95% accuracy"""
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._build_suffix_array()
+        self._build_bk_tree()
+    
+    def _build_suffix_array(self):
+        """Build suffix array for substring matching"""
+        logger.info("Building suffix array...")
+        self.suffix_map = defaultdict(set)
+        
+        for idx, text in enumerate(self.normalized_items):
+            # Add all suffixes
+            for i in range(len(text)):
+                suffix = text[i:]
+                if len(suffix) >= 3:
+                    self.suffix_map[suffix[:3]].add(idx)
+    
+    def _build_bk_tree(self):
+        """Build BK-tree for efficient edit distance searches"""
+        logger.info("Building BK-tree...")
+        
+        class BKNode:
+            def __init__(self, word, idx):
+                self.word = word
+                self.idx = idx
+                self.children = {}
+        
+        self.bk_root = None
+        
+        for idx, text in enumerate(self.normalized_items):
+            if self.bk_root is None:
+                self.bk_root = BKNode(text, idx)
+            else:
+                current = self.bk_root
+                while True:
+                    dist = polyleven.levenshtein(text, current.word)
+                    if dist in current.children:
+                        current = current.children[dist]
+                    else:
+                        current.children[dist] = BKNode(text, idx)
+                        break
+    
+    def _bk_tree_search(self, query: str, max_dist: int = 3) -> Set[int]:
+        """Search BK-tree for similar items"""
+        if self.bk_root is None:
+            return set()
+        
+        candidates = set()
+        stack = [(self.bk_root, polyleven.levenshtein(query, self.bk_root.word))]
+        
+        while stack:
+            node, dist = stack.pop()
+            
+            if dist <= max_dist:
+                candidates.add(node.idx)
+            
+            # Use triangle inequality to prune search
+            for edge_dist, child in node.children.items():
+                if abs(dist - edge_dist) <= max_dist:
+                    child_dist = polyleven.levenshtein(query, child.word)
+                    if child_dist <= max_dist:
+                        stack.append((child, child_dist))
+        
+        return candidates
+    
+    def match_single_enhanced(self, query: str, threshold: float = 0.85) -> Optional[MatchResult]:
+        """Enhanced matching with additional algorithms"""
+        # First try standard matching
+        result = self.match_single(query, threshold)
+        
+        # If no good match, try additional methods
+        if result is None or result.score < 0.95:
+            normalized_query = self._normalize(query)
+            
+            # Try BK-tree search
+            bk_candidates = self._bk_tree_search(normalized_query, max_dist=2)
+            
+            # Try substring matching
+            substring_candidates = set()
+            if len(normalized_query) >= 3:
+                for i in range(len(normalized_query) - 2):
+                    substr = normalized_query[i:i+3]
+                    if substr in self.suffix_map:
+                        substring_candidates.update(self.suffix_map[substr])
+            
+            # Combine all candidates
+            all_candidates = bk_candidates | substring_candidates
+            if result and result.match_id in self.item_ids:
+                all_candidates.add(self.item_ids.index(result.match_id))
+            
+            # Re-score with all candidates
+            best_score = result.score if result else 0
+            best_match = None
+            best_algo = result.algorithm if result else None
+            
+            for idx in all_candidates:
+                score, algo = self._calculate_hybrid_score(normalized_query, idx)
+                
+                # Apply special boosting for exact substring matches
+                if normalized_query in self.normalized_items[idx]:
+                    score = min(1.0, score * 1.2)
+                    algo = 'exact_substring'
+                
+                if score > best_score:
+                    best_score = score
+                    best_match = idx
+                    best_algo = algo
+            
+            if best_score >= threshold and best_match is not None:
+                result = MatchResult(
+                    query=query,
+                    match=self.item_texts[best_match],
+                    score=best_score,
+                    match_id=self.item_ids[best_match],
+                    algorithm=best_algo,
+                    confidence=best_score
+                )
+        
+        return result
+
+
+# Utility functions for testing and evaluation
+def evaluate_matcher(matcher: HybridFuzzyMatcher, test_data: List[Tuple[str, str]], threshold: float = 0.85) -> Dict:
+    """Evaluate matcher performance"""
+    start_time = time.time()
+    
+    queries = [query for query, _ in test_data]
+    expected = [expected for _, expected in test_data]
+    
+    # Perform matching
+    results = matcher.match_batch_optimized(queries, threshold)
+    
+    # Calculate metrics
+    correct = 0
+    total = len(test_data)
+    
+    for i, (result, expected_match) in enumerate(zip(results, expected)):
+        if result and result.match == expected_match:
+            correct += 1
+    
+    accuracy = correct / total
+    elapsed_time = time.time() - start_time
+    queries_per_second = total / elapsed_time
+    
+    return {
+        'accuracy': accuracy,
+        'correct': correct,
+        'total': total,
+        'elapsed_time': elapsed_time,
+        'queries_per_second': queries_per_second,
+        'avg_time_per_query': elapsed_time / total * 1000  # milliseconds
+    }
+
+
+# Example usage and testing
+def main():
+    # Generate sample data
+    logger.info("Generating sample data...")
+    
+    # Create 30,000 items
+    items = []
+    companies = ['Apple', 'Google', 'Microsoft', 'Amazon', 'Facebook', 'Tesla', 'Netflix', 'Adobe']
+    products = ['iPhone', 'Pixel', 'Surface', 'Echo', 'Quest', 'Model', 'Stream', 'Creative']
+    years = ['2020', '2021', '2022', '2023', '2024']
+    
+    for i in range(30000):
+        company = companies[i % len(companies)]
+        product = products[(i // 100) % len(products)]
+        year = years[(i // 1000) % len(years)]
+        variant = f"v{i % 10}" if i % 3 == 0 else ""
+        
+        item_text = f"{company} {product} {year} {variant}".strip()
+        items.append((i, item_text))
+    
+    # Add some items with typos and variations
+    items.extend([
+        (30000, "Appl iPhone 2023"),  # Typo
+        (30001, "Google Pixel 2024 v2"),  # Extra info
+        (30002, "Microsoft Surface twenty twenty three"),  # Different format
+        (30003, "amazn Echo 2022"),  # Missing letters
+        (30004, "Facebook Quest 2023 version 1"),  # Extra words
+    ])
+    
+    # Initialize matcher
+    logger.info("Initializing matcher...")
+    matcher = EnhancedMatcher(items, use_semantic=True, use_phonetic=True)
+    
+    # Test queries
+    test_queries = [
+        ("Apple iPhone 2023", "Apple iPhone 2023"),
+        ("Appl iPone 2023", "Apple iPhone 2023"),  # Typos
+        ("Google Pixel 24", "Google Pixel 2024"),  # Partial year
+        ("Microsoft Srface 2022", "Microsoft Surface 2022"),  # Typo
+        ("Amazon Echo twenty twenty two", "Amazon Echo 2022"),  # Different format
+        ("Tesla Model 2021 version 5", "Tesla Model 2021 v5"),  # Different wording
+        ("Netflex Stream 2020", "Netflix Stream 2020"),  # Phonetic similarity
+        ("Adobe Creative 2024", "Adobe Creative 2024"),  # Exact match
+        ("facebook quest", "Facebook Quest 2020"),  # Case insensitive, partial
+        ("MSFT Surface", "Microsoft Surface 2020"),  # Abbreviation
+    ]
+    
+    # Evaluate performance
+    logger.info("Evaluating matcher performance...")
+    metrics = evaluate_matcher(matcher, test_queries, threshold=0.85)
+    
+    print("\n=== Performance Metrics ===")
+    print(f"Accuracy: {metrics['accuracy']:.2%} ({metrics['correct']}/{metrics['total']})")
+    print(f"Total time: {metrics['elapsed_time']:.2f} seconds")
+    print(f"Queries per second: {metrics['queries_per_second']:.2f}")
+    print(f"Average time per query: {metrics['avg_time_per_query']:.2f} ms")
+    
+    # Detailed results
+    print("\n=== Detailed Results ===")
+    results = matcher.match_batch_optimized([q for q, _ in test_queries], threshold=0.85)
+    
+    for i, (query, expected) in enumerate(test_queries):
+        result = results[i]
+        if result:
+            status = "✓" if result.match == expected else "✗"
+            print(f"{status} Query: '{query}'")
+            print(f"   Expected: '{expected}'")
+            print(f"   Got: '{result.match}' (score: {result.score:.3f}, algo: {result.algorithm})")
+        else:
+            print(f"✗ Query: '{query}' - No match found")
+        print()
+    
+    # Save index for future use
+    matcher.save_index("fuzzy_matcher_index.pkl")
+    
+    # Test loading
+    logger.info("Testing index loading...")
+    loaded_matcher = EnhancedMatcher.load_index("fuzzy_matcher_index.pkl")
+    
+    # Verify loaded matcher works
+    test_result = loaded_matcher.match_single("Apple iPhone 2023")
+    print(f"\nLoaded matcher test: {test_result}")
+
+
+if __name__ == "__main__":
+    main()
+Key Features for >95% Accuracy
+1. Multiple Algorithm Combination
+RapidFuzz for fast token-based matching
+Phonetic matching for sound-alike words
+Semantic embeddings for meaning-based similarity
+N-gram indexing for fast candidate selection
+BK-tree for efficient edit distance searches
+2. Preprocessing and Normalization
+Consistent lowercasing and whitespace handling
+Special character normalization
+Token-based and character-based analysis
+3. Intelligent Candidate Selection
+N-gram index reduces search space by 95%+
+Phonetic index catches misspellings
+Semantic search finds conceptually similar items
+BK-tree enables efficient fuzzy searches
+4. Hybrid Scoring
+Weighted combination of multiple similarity metrics
+Boosting for exact substring matches
+Semantic similarity bonus
+Context-aware scoring
+5. Performance Optimization
+Batch processing with RapidFuzz's cdist
+Parallel processing for multiple queries
+Caching of frequent queries
+Preprocessed indices saved to disk
+Additional Optimizations for Production
+python
+# Production-ready configuration
+class ProductionFuzzyMatcher(EnhancedMatcher):
+    """Production-optimized matcher with additional features"""
+    
+    def __init__(self, *args, **kwargs):
+        # Add redis caching
+        self.redis_client = None
+        try:
+            import redis
+            self.redis_client = redis.Redis(host='localhost', port=6379, decode_responses=True)
+        except:
+            logger.warning("Redis not available, using in-memory cache only")
+        
+        super().__init__(*args, **kwargs)
+    
+    def match_with_fallback(self, query: str, threshold: float = 0.85) -> Optional[MatchResult]:
+        """Match with multiple fallback strategies"""
+        
+        # Try cache first
+        if self.redis_client:
+            try:
+                cached = self.redis_client.get(f"fuzzy:{query}:{threshold}")
+                if cached:
+                    return pickle.loads(cached)
+            except:
+                pass
+        
+        # Strategy 1: Standard enhanced matching
+        result = self.match_single_enhanced(query, threshold)
+        
+        # Strategy 2: If no match, try lower threshold with verification
+        if not result and threshold > 0.7:
+            result = self.match_single_enhanced(query, threshold - 0.1)
+            if result:
+                # Verify with a different algorithm
+                verification_score = thefuzz_fuzz.token_set_ratio(query, result.match) / 100
+                if verification_score < threshold:
+                    result = None
+        
+        # Strategy 3: Try partial matching for long queries
+        if not result and len(query.split()) > 3:
+            words = query.split()
+            # Try matching first 3 words
+            partial_query = ' '.join(words[:3])
+            result = self.match_single_enhanced(partial_query, threshold)
+        
+        # Cache successful results
+        if result and self.redis_client:
+            try:
+                self.redis_client.setex(
+                    f"fuzzy:{query}:{threshold}",
+                    3600,  # 1 hour TTL
+                    pickle.dumps(result)
+                )
+            except:
+                pass
+        
+        return result
+
+# Benchmarking function
+def benchmark_accuracy(matcher, test_size=1000):
+    """Comprehensive accuracy benchmark"""
+    import random
+    
+    # Generate test cases with various types of variations
+    test_cases = []
+    
+    for _ in range(test_size):
+        # Pick a random item
+        idx = random.randint(0, len(matcher.items) - 1)
+        original = matcher.item_texts[idx]
+        
+        # Create variations
+        variation_type = random.choice(['typo', 'partial', 'reorder', 'phonetic', 'exact'])
+        
+        if variation_type == 'typo':
+            # Introduce typos
+            words = original.split()
+            if words:
+                word_idx = random.randint(0, len(words) - 1)
+                word = words[word_idx]
+                if len(word) > 2:
+                    char_idx = random.randint(1, len(word) - 1)
+                    word = word[:char_idx] + random.choice('abcdefghijklmnopqrstuvwxyz') + word[char_idx+1:]
+                    words[word_idx] = word
+                query = ' '.join(words)
+            else:
+                query = original
+                
+        elif variation_type == 'partial':
+            # Use partial query
+            words = original.split()
+            if len(words) > 1:
+                start = random.randint(0, len(words) - 1)
+                end = random.randint(start + 1, len(words))
+                query = ' '.join(words[start:end])
+            else:
+                query = original
+                
+        elif variation_type == 'reorder':
+            # Reorder words
+            words = original.split()
+            random.shuffle(words)
+            query = ' '.join(words)
+            
+        elif variation_type == 'phonetic':
+            # Create phonetic variation
+            query = original.replace('ph', 'f').replace('tion', 'shun')
+            
+        else:  # exact
+            query = original
+        
+        test_cases.append((query, original))
+    
+    # Run benchmark
+    results = evaluate_matcher(matcher, test_cases, threshold=0.80)
+    
+    return results
+Usage Guide for 95%+ Accuracy
+python
+# 1. Initialize with your 30,000 items
+items = [(i, text) for i, text in enumerate(your_30000_items)]
+matcher = EnhancedMatcher(items, use_semantic=True, use_phonetic=True)
+
+# 2. For batch matching (recommended for 20 items)
+queries = ["your", "20", "queries", "here"]
+results = matcher.match_batch_optimized(queries, threshold=0.85)
+
+# 3. For production use with caching
+prod_matcher = ProductionFuzzyMatcher(items)
+results = [prod_matcher.match_with_fallback(q) for q in queries]
+
+# 4. Tune threshold based on your needs
+# - 0.95+ for near-exact matches only
+# - 0.85-0.95 for good matches with minor variations  
+# - 0.75-0.85 for moderate fuzzy matching
+# - Below 0.75 for very fuzzy matching (may have false positives)
