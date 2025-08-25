@@ -195,8 +195,9 @@ export interface Database {
           confidence_score: number | null
           vector_score: number | null
           trigram_score: number | null
-          fuzzy_score: number | null      // NEW: Added fuzzy score field
+          fuzzy_score: number | null      // Added fuzzy score field
           alias_score: number | null
+          learned_score: number | null    // NEW: Added learned score field
           final_score: number | null
           matched_text: string | null
           reasoning: string | null
@@ -214,8 +215,9 @@ export interface Database {
           confidence_score?: number | null
           vector_score?: number | null
           trigram_score?: number | null
-          fuzzy_score?: number | null     // NEW: Added fuzzy score field
+          fuzzy_score?: number | null     // Added fuzzy score field
           alias_score?: number | null
+          learned_score?: number | null   // NEW: Added learned score field
           final_score?: number | null
           matched_text?: string | null
           reasoning?: string | null
@@ -233,8 +235,9 @@ export interface Database {
           confidence_score?: number | null
           vector_score?: number | null
           trigram_score?: number | null
-          fuzzy_score?: number | null     // NEW: Added fuzzy score field
+          fuzzy_score?: number | null     // Added fuzzy score field
           alias_score?: number | null
+          learned_score?: number | null   // NEW: Added learned score field
           final_score?: number | null
           matched_text?: string | null
           reasoning?: string | null
@@ -302,6 +305,83 @@ export interface Database {
           created_at?: string
         }
       }
+      match_training_data: {
+        Row: {
+          id: string
+          organization_id: string
+          line_item_id: string | null
+          line_item_text: string
+          line_item_normalized: string
+          matched_product_id: string
+          product_sku: string
+          product_name: string
+          product_manufacturer: string | null
+          product_category: string | null
+          trigram_score: number | null
+          fuzzy_score: number | null
+          alias_score: number | null
+          final_score: number | null
+          match_quality: 'excellent' | 'good' | 'fair' | 'poor'
+          match_confidence: number
+          approved_by: string | null
+          approved_at: string
+          training_weight: number
+          times_referenced: number
+          last_referenced_at: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          organization_id: string
+          line_item_id?: string | null
+          line_item_text: string
+          line_item_normalized: string
+          matched_product_id: string
+          product_sku: string
+          product_name: string
+          product_manufacturer?: string | null
+          product_category?: string | null
+          trigram_score?: number | null
+          fuzzy_score?: number | null
+          alias_score?: number | null
+          final_score?: number | null
+          match_quality?: 'excellent' | 'good' | 'fair' | 'poor'
+          match_confidence?: number
+          approved_by?: string | null
+          approved_at?: string
+          training_weight?: number
+          times_referenced?: number
+          last_referenced_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          organization_id?: string
+          line_item_id?: string | null
+          line_item_text?: string
+          line_item_normalized?: string
+          matched_product_id?: string
+          product_sku?: string
+          product_name?: string
+          product_manufacturer?: string | null
+          product_category?: string | null
+          trigram_score?: number | null
+          fuzzy_score?: number | null
+          alias_score?: number | null
+          final_score?: number | null
+          match_quality?: 'excellent' | 'good' | 'fair' | 'poor'
+          match_confidence?: number
+          approved_by?: string | null
+          approved_at?: string
+          training_weight?: number
+          times_referenced?: number
+          last_referenced_at?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+      }
       settings: {
         Row: {
           id: string
@@ -365,12 +445,8 @@ export interface Database {
       hybrid_product_match: {
         Args: {
           query_text: string
-          query_embedding: number[]
-          org_id: string
           limit_count?: number
-          vector_weight?: number
-          trigram_weight?: number
-          alias_weight?: number
+          threshold?: number
         }
         Returns: {
           product_id: string
@@ -379,7 +455,9 @@ export interface Database {
           manufacturer: string | null
           vector_score: number
           trigram_score: number
+          fuzzy_score: number
           alias_score: number
+          learned_score: number
           final_score: number
           matched_via: string
         }[]

@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '../../providers'
 import LoadingSpinner from '@/components/ui/LoadingSpinner'
-import ProductGrid from '@/components/catalog/ProductGrid'
+import ProductTable from '@/components/catalog/ProductTable'
 import SearchFilters from '@/components/catalog/SearchFilters'
 import BulkActionToolbar from '@/components/catalog/BulkActionToolbar'
 import ProductFormModal from '@/components/catalog/ProductFormModal'
@@ -39,7 +39,7 @@ export default function CatalogPage() {
     total: 0
   })
 
-  // Debounced search
+  // Debounced search - now triggers server-side search
   const [searchQuery, setSearchQuery] = useState('')
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -49,32 +49,42 @@ export default function CatalogPage() {
     return () => clearTimeout(timer)
   }, [searchQuery])
 
-  // Filtered products
-  const filteredProducts = useMemo(() => {
-    let filtered = products
+  // All products for client-side filtering when no server search
+  const [allProducts, setAllProducts] = useState<Product[]>([])
 
-    if (filters.query) {
-      const query = filters.query.toLowerCase()
-      filtered = filtered.filter(product => 
-        product.name.toLowerCase().includes(query) ||
-        product.sku.toLowerCase().includes(query) ||
-        (product.manufacturer && product.manufacturer.toLowerCase().includes(query)) ||
-        (product.description && product.description.toLowerCase().includes(query))
-      )
+  // Display products (either filtered results or paginated view)
+  const displayProducts = useMemo(() => {
+    if (filters.query || filters.category || filters.manufacturer) {
+      // When filtering, show all filtered results (no pagination)
+      return allProducts.filter(product => {
+        let matches = true
+
+        if (filters.query) {
+          const query = filters.query.toLowerCase()
+          matches = matches && (
+            product.name.toLowerCase().includes(query) ||
+            product.sku.toLowerCase().includes(query) ||
+            (product.manufacturer && product.manufacturer.toLowerCase().includes(query)) ||
+            (product.description && product.description.toLowerCase().includes(query))
+          )
+        }
+
+        if (filters.category) {
+          matches = matches && product.category === filters.category
+        }
+
+        if (filters.manufacturer) {
+          matches = matches && product.manufacturer === filters.manufacturer
+        }
+
+        return matches
+      })
     }
+    // When no filters, show paginated results
+    return products
+  }, [products, allProducts, filters])
 
-    if (filters.category) {
-      filtered = filtered.filter(product => product.category === filters.category)
-    }
-
-    if (filters.manufacturer) {
-      filtered = filtered.filter(product => product.manufacturer === filters.manufacturer)
-    }
-
-    return filtered
-  }, [products, filters])
-
-  // Load products
+  // Load products (paginated view)
   const loadProducts = async () => {
     if (!profile?.organization_id) return
 
@@ -101,20 +111,40 @@ export default function CatalogPage() {
     }
   }
 
+  // Load all products for comprehensive search
+  const loadAllProducts = async () => {
+    if (!profile?.organization_id) return
+
+    try {
+      const { data, error } = await supabase
+        .from('products')
+        .select('*')
+        .eq('organization_id', profile.organization_id)
+        .order('created_at', { ascending: false })
+
+      if (error) throw error
+
+      setAllProducts(data || [])
+    } catch (error) {
+      console.error('Error loading all products:', error)
+    }
+  }
+
   useEffect(() => {
     loadProducts()
+    loadAllProducts()
   }, [profile?.organization_id, pagination.page, pagination.limit])
 
-  // Get unique categories and manufacturers for filters
+  // Get unique categories and manufacturers for filters (from all products)
   const categories = useMemo(() => {
-    const cats = products.map(p => p.category).filter(Boolean) as string[]
+    const cats = allProducts.map(p => p.category).filter(Boolean) as string[]
     return Array.from(new Set(cats))
-  }, [products])
+  }, [allProducts])
 
   const manufacturers = useMemo(() => {
-    const mfrs = products.map(p => p.manufacturer).filter(Boolean) as string[]
+    const mfrs = allProducts.map(p => p.manufacturer).filter(Boolean) as string[]
     return Array.from(new Set(mfrs))
-  }, [products])
+  }, [allProducts])
 
   const handleProductSave = async (productData: Partial<Product>) => {
     try {
@@ -142,6 +172,7 @@ export default function CatalogPage() {
       }
 
       await loadProducts()
+      await loadAllProducts()
       setShowProductForm(false)
       setEditingProduct(null)
     } catch (error) {
@@ -159,6 +190,7 @@ export default function CatalogPage() {
       if (error) throw error
 
       await loadProducts()
+      await loadAllProducts()
     } catch (error) {
       console.error('Error deleting product:', error)
     }
@@ -174,6 +206,7 @@ export default function CatalogPage() {
       if (error) throw error
 
       await loadProducts()
+      await loadAllProducts()
       setSelectedProducts([])
     } catch (error) {
       console.error('Error bulk deleting products:', error)
@@ -187,6 +220,7 @@ export default function CatalogPage() {
 
   const handleImportComplete = () => {
     loadProducts()
+    loadAllProducts()
     setShowImportModal(false)
   }
 
@@ -250,14 +284,17 @@ export default function CatalogPage() {
         />
       )}
 
-      {/* Products Grid */}
-      <ProductGrid
-        products={filteredProducts}
+      {/* Products Table */}
+      <ProductTable
+        products={displayProducts}
         selectedProducts={selectedProducts}
         onProductSelect={setSelectedProducts}
         onProductEdit={handleProductEdit}
         onProductDelete={handleProductDelete}
-        onProductUpdate={loadProducts}
+        onProductUpdate={() => {
+          loadProducts()
+          loadAllProducts()
+        }}
         loading={loading}
       />
 

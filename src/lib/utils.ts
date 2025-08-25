@@ -51,8 +51,9 @@ export interface Match {
   confidence_score: number | null
   vector_score: number | null
   trigram_score: number | null
-  fuzzy_score: number | null      // NEW: Added fuzzy score field
+  fuzzy_score: number | null      // Added fuzzy score field
   alias_score: number | null
+  learned_score: number | null    // NEW: Added learned score field
   final_score: number | null
   matched_text: string | null
   reasoning: string | null
@@ -69,8 +70,9 @@ export interface MatchCandidate {
   manufacturer: string | null
   vector_score: number
   trigram_score: number
-  fuzzy_score: number         // NEW: Added fuzzy score field
+  fuzzy_score: number         // Added fuzzy score field
   alias_score: number
+  learned_score: number       // NEW: Added learned similarity score field
   final_score: number
   matched_via: string
 }
@@ -214,11 +216,12 @@ export async function generateEmbedding(text: string): Promise<number[]> {
 export const CONFIG = {
   MATCHING: {
     VECTOR_WEIGHT: 0.0,      // Disabled (no vector matching)  
-    TRIGRAM_WEIGHT: 0.5,     // 50% weight - n-gram similarity
-    FUZZY_WEIGHT: 0.3,       // 30% weight - Levenshtein distance
-    ALIAS_WEIGHT: 0.2,       // 20% weight - learned competitor mappings
+    TRIGRAM_WEIGHT: 0.4,     // 40% weight - n-gram similarity (reduced)
+    FUZZY_WEIGHT: 0.25,      // 25% weight - Levenshtein distance (reduced)
+    ALIAS_WEIGHT: 0.2,       // 20% weight - learned competitor mappings (same)
+    LEARNED_WEIGHT: 0.15,    // 15% weight - ML learned similarity (NEW)
     AUTO_APPROVE_THRESHOLD: 0.9,
-    CONFIDENCE_THRESHOLD: 0.3,
+    CONFIDENCE_THRESHOLD: 0.18,
     MAX_SUGGESTIONS: 10,
   },
   UPLOAD: {

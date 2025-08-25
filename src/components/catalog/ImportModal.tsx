@@ -35,7 +35,7 @@ export default function ImportModal({
   const [importing, setImporting] = useState(false)
   const [parsedProducts, setParsedProducts] = useState<ImportedProduct[]>([])
   const [step, setStep] = useState<'upload' | 'preview' | 'importing' | 'complete'>('upload')
-  const [importResults, setImportResults] = useState({ success: 0, errors: 0 })
+  const [importResults, setImportResults] = useState({ success: 0, errors: 0, skipped: 0 })
 
   const handleDrag = useCallback((e: React.DragEvent) => {
     e.preventDefault()
@@ -144,6 +144,7 @@ export default function ImportModal({
 
     let successCount = 0
     let errorCount = 0
+    let skippedCount = 0
 
     for (const product of parsedProducts) {
       if (product.status === 'error') {
@@ -152,7 +153,27 @@ export default function ImportModal({
       }
 
       try {
-        // Insert product
+        // First check if product already exists
+        const { data: existingProduct, error: checkError } = await supabase
+          .from('products')
+          .select('id, sku')
+          .eq('organization_id', profile.organization_id)
+          .eq('sku', product.sku)
+          .maybeSingle()
+
+        if (checkError && checkError.code !== 'PGRST116') {
+          throw checkError
+        }
+
+        if (existingProduct) {
+          // Product already exists, skip it
+          product.status = 'success'
+          product.error = 'Already exists (skipped)'
+          skippedCount++
+          continue
+        }
+
+        // Insert new product
         const { data: insertedProduct, error: insertError } = await supabase
           .from('products')
           .insert({
@@ -168,7 +189,16 @@ export default function ImportModal({
           .select()
           .single()
 
-        if (insertError) throw insertError
+        if (insertError) {
+          // Check if it's a duplicate key error (race condition)
+          if (insertError.code === '23505' && insertError.message.includes('products_organization_id_sku_key')) {
+            product.status = 'success'
+            product.error = 'Already exists (concurrent insert)'
+            skippedCount++
+            continue
+          }
+          throw insertError
+        }
 
         // Generate embedding for the product
         if (insertedProduct) {
@@ -185,7 +215,7 @@ export default function ImportModal({
       }
     }
 
-    setImportResults({ success: successCount, errors: errorCount })
+    setImportResults({ success: successCount, errors: errorCount, skipped: skippedCount })
     setParsedProducts([...parsedProducts]) // Trigger re-render
     setStep('complete')
     setImporting(false)
@@ -449,7 +479,10 @@ export default function ImportModal({
                   Import Complete!
                 </h4>
                 <div className="space-y-2 text-sm text-gray-600">
-                  <p>{importResults.success} products imported successfully</p>
+                  <p>{importResults.success} new products imported successfully</p>
+                  {importResults.skipped > 0 && (
+                    <p className="text-blue-600">{importResults.skipped} products already existed (skipped)</p>
+                  )}
                   {importResults.errors > 0 && (
                     <p className="text-red-600">{importResults.errors} products failed to import</p>
                   )}

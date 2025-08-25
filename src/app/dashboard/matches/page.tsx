@@ -32,6 +32,12 @@ export default function MatchesPage() {
   const [showPickerModal, setShowPickerModal] = useState(false)
   const [activeLineItem, setActiveLineItem] = useState<LineItemWithMatch | null>(null)
   const [candidateCache, setCandidateCache] = useState<Record<string, MatchCandidate[]>>({})
+  
+  // Clear cache when threshold changes or on demand
+  const clearMatchCache = useCallback(() => {
+    setCandidateCache({})
+    console.log('🔄 Match cache cleared - will regenerate with new threshold')
+  }, [])
   const [processingItems, setProcessingItems] = useState<Set<string>>(new Set())
 
   // Load line items with their current matches
@@ -133,8 +139,9 @@ export default function MatchesPage() {
           confidence_score: candidate.final_score,
           vector_score: candidate.vector_score,
           trigram_score: candidate.trigram_score,
-          fuzzy_score: candidate.fuzzy_score,        // NEW: Added fuzzy score
+          fuzzy_score: candidate.fuzzy_score,        // Added fuzzy score
           alias_score: candidate.alias_score,
+          learned_score: candidate.learned_score,    // NEW: Added learned score
           final_score: candidate.final_score,
           matched_text: candidate.name,
           reasoning: `Matched via ${candidate.matched_via}`,
@@ -181,6 +188,63 @@ export default function MatchesPage() {
         } catch (aliasError) {
           console.warn('⚠️ Could not create competitor alias:', aliasError)
           // Don't fail the match approval if alias creation fails
+        }
+      }
+
+      // Store training data for machine learning enhancement
+      if (lineItem) {
+        try {
+          // Get product details for the training data
+          const { data: productData, error: productError } = await supabase
+            .from('products')
+            .select('sku, name, manufacturer, category')
+            .eq('id', productId)
+            .single()
+
+          if (!productError && productData) {
+            const lineItemText = lineItem.parsed_data?.name || lineItem.raw_text
+            const normalizedText = lineItemText.toLowerCase().trim().replace(/\s+/g, ' ')
+            
+            // Determine match quality based on confidence score
+            let matchQuality: 'excellent' | 'good' | 'fair' | 'poor' = 'good'
+            if (candidate.final_score >= 0.9) matchQuality = 'excellent'
+            else if (candidate.final_score >= 0.7) matchQuality = 'good'
+            else if (candidate.final_score >= 0.5) matchQuality = 'fair'
+            else matchQuality = 'poor'
+
+            await supabase
+              .from('match_training_data')
+              .insert({
+                organization_id: organizationId,
+                line_item_id: lineItemId,
+                line_item_text: lineItemText,
+                line_item_normalized: normalizedText,
+                matched_product_id: productId,
+                product_sku: productData.sku,
+                product_name: productData.name,
+                product_manufacturer: productData.manufacturer,
+                product_category: productData.category,
+                trigram_score: candidate.trigram_score,
+                fuzzy_score: candidate.fuzzy_score,
+                alias_score: candidate.alias_score,
+                final_score: candidate.final_score,
+                match_quality: matchQuality,
+                match_confidence: candidate.final_score,
+                approved_by: user.id,
+                approved_at: new Date().toISOString(),
+                training_weight: 1.0
+              })
+
+            console.log('✅ Created training data:', {
+              lineItemText: lineItemText,
+              productName: productData.name,
+              matchQuality,
+              confidence: candidate.final_score
+            })
+          }
+        } catch (trainingError) {
+          console.warn('⚠️ Could not create training data:', trainingError)
+          // Don't fail the match approval if training data creation fails
         }
       }
 
@@ -417,16 +481,48 @@ export default function MatchesPage() {
         .filter(item => !candidateCache[item.id] && (!item.match || item.match.status === 'pending'))
         .slice(0, 50) // Load candidates for first 50 items
 
-      for (const item of itemsNeedingCandidates) {
-        const candidates = await generateMatchCandidates(item)
-        setCandidateCache(prev => ({ ...prev, [item.id]: candidates }))
+      if (itemsNeedingCandidates.length === 0) return
+
+      console.log(`🔄 Loading candidates for ${itemsNeedingCandidates.length} items`)
+      
+      // Process items in parallel batches of 5 to avoid overwhelming the RPC
+      const batchSize = 5
+      for (let i = 0; i < itemsNeedingCandidates.length; i += batchSize) {
+        const batch = itemsNeedingCandidates.slice(i, i + batchSize)
+        
+        const batchPromises = batch.map(async (item) => {
+          try {
+            const candidates = await generateMatchCandidates(item)
+            console.log(`📝 Found ${candidates.length} candidates for: "${item.parsed_data?.name || item.raw_text}"`)
+            return { id: item.id, candidates }
+          } catch (error) {
+            console.error(`❌ Failed to load candidates for item ${item.id}:`, error)
+            return { id: item.id, candidates: [] }
+          }
+        })
+        
+        const batchResults = await Promise.all(batchPromises)
+        
+        // Update cache with batch results
+        setCandidateCache(prev => {
+          const newCache = { ...prev }
+          batchResults.forEach(({ id, candidates }) => {
+            newCache[id] = candidates
+          })
+          return newCache
+        })
+        
+        // Small delay between batches to avoid rate limiting
+        if (i + batchSize < itemsNeedingCandidates.length) {
+          await new Promise(resolve => setTimeout(resolve, 100))
+        }
       }
     }
 
-    if (lineItems.length > 0) {
+    if (lineItems.length > 0 && user && profile) {
       loadCandidates()
     }
-  }, [lineItems, generateMatchCandidates])
+  }, [lineItems, generateMatchCandidates, user, profile])
 
   if (loading) {
     return (
@@ -483,10 +579,19 @@ export default function MatchesPage() {
           />
         </div>
         
-        <ThresholdControl
-          value={autoMatchThreshold}
-          onChange={setAutoMatchThreshold}
-        />
+        <div className="flex items-center space-x-3">
+          <ThresholdControl
+            value={autoMatchThreshold}
+            onChange={setAutoMatchThreshold}
+          />
+          <button
+            onClick={clearMatchCache}
+            className="px-3 py-1 text-sm bg-gray-100 hover:bg-gray-200 rounded-md text-gray-700 border"
+            title="Clear match cache and regenerate with new threshold"
+          >
+            🔄 Refresh Matches
+          </button>
+        </div>
       </div>
 
       {/* Main Table */}
