@@ -53,7 +53,6 @@ export interface Match {
   trigram_score: number | null
   fuzzy_score: number | null      // Added fuzzy score field
   alias_score: number | null
-  learned_score: number | null    // NEW: Added learned score field
   final_score: number | null
   matched_text: string | null
   reasoning: string | null
@@ -72,7 +71,6 @@ export interface MatchCandidate {
   trigram_score: number
   fuzzy_score: number         // Added fuzzy score field
   alias_score: number
-  learned_score: number       // NEW: Added learned similarity score field
   final_score: number
   matched_via: string
 }
@@ -151,7 +149,8 @@ export function getStatusColor(status: string): string {
   }
 }
 
-export function truncateText(text: string, maxLength: number = 50): string {
+export function truncateText(text: string | null | undefined, maxLength: number = 50): string {
+  if (!text || typeof text !== 'string') return ''
   if (text.length <= maxLength) return text
   return text.substring(0, maxLength) + '...'
 }

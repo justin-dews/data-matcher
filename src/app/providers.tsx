@@ -31,9 +31,11 @@ export function Providers({ children }: { children: React.ReactNode }) {
 
   const fetchProfile = async (userId: string) => {
     try {
-      // Add timeout to prevent hanging
+      console.log('🔍 Fetching profile for user:', userId)
+      
+      // Add timeout to prevent hanging - increased to 10 seconds
       const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Profile fetch timeout')), 3000)
+        setTimeout(() => reject(new Error('Profile fetch timeout')), 10000)
       )
       
       const profilePromise = supabase
@@ -45,7 +47,8 @@ export function Providers({ children }: { children: React.ReactNode }) {
       const { data, error } = await Promise.race([profilePromise, timeoutPromise]) as any
 
       if (error) {
-        console.error('Error fetching profile:', error)
+        console.error('❌ Error fetching profile:', error)
+        console.error('Error details:', { code: error.code, message: error.message, details: error.details })
         
         // If profile doesn't exist, create a default organization and profile
         if (error.code === 'PGRST116') {
@@ -124,7 +127,15 @@ export function Providers({ children }: { children: React.ReactNode }) {
       
       setProfile(data)
     } catch (error) {
-      console.error('Error in fetchProfile:', error)
+      console.error('❌ Critical error in fetchProfile:', error)
+      
+      // If it's a timeout, skip profile creation and continue with null profile
+      if (error instanceof Error && error.message.includes('timeout')) {
+        console.warn('⚠️ Profile fetch timed out - continuing without profile (you may need to refresh)')
+        setProfile(null)
+        return
+      }
+      
       setProfile(null)
     }
   }
@@ -135,14 +146,21 @@ export function Providers({ children }: { children: React.ReactNode }) {
     // Get initial session with timeout
     const getSession = async () => {
       try {
-        // Set a reasonable timeout for auth initialization
-        const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Auth timeout')), 5000)
-        )
+        console.log('🔄 Initializing auth session...')
         
-        const sessionPromise = supabase.auth.getSession()
+        // Try to get session without timeout first to see if it works
+        const { data: { session }, error } = await supabase.auth.getSession()
         
-        const { data: { session } } = await Promise.race([sessionPromise, timeoutPromise]) as any
+        if (error) {
+          console.error('❌ Auth session error:', error)
+          throw error
+        }
+        
+        console.log('🔐 Auth session loaded:', session ? 'User authenticated' : 'No session')
+        if (session?.user) {
+          console.log('👤 User ID:', session.user.id)
+          console.log('📧 User email:', session.user.email)
+        }
         
         if (!isMounted) return
         
@@ -156,7 +174,27 @@ export function Providers({ children }: { children: React.ReactNode }) {
         }
         
       } catch (error) {
-        console.error('Auth initialization error:', error)
+        console.error('❌ Auth initialization error:', error)
+        
+        // Try alternative auth check - get current user directly
+        try {
+          console.log('🔄 Trying alternative auth method...')
+          const { data: { user }, error: userError } = await supabase.auth.getUser()
+          
+          if (userError) {
+            console.error('❌ Alternative auth also failed:', userError)
+          } else if (user) {
+            console.log('✅ Found user via alternative method:', user.email)
+            if (isMounted) {
+              setUser(user)
+              await fetchProfile(user.id)
+            }
+            return
+          }
+        } catch (altError) {
+          console.error('❌ Alternative auth method failed:', altError)
+        }
+        
         // On error, assume no user and continue
         if (isMounted) {
           setUser(null)
@@ -174,7 +212,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
     // Listen for auth changes
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (event, session) => {
+    } = supabase.auth.onAuthStateChange(async (_, session) => {
       if (!isMounted) return
       
       const user = session?.user ?? null

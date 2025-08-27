@@ -1,5 +1,6 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createSupabaseClient, corsHeaders } from '../_shared/supabase.ts';
+import { resilientOpenAIEmbeddings, ResilientAPIError, ErrorType } from '../_shared/resilient-apis.ts';
 import type { 
   OpenAIEmbeddingResponse,
   EmbeddingRequest,
@@ -24,50 +25,62 @@ async function generateEmbeddings(texts: string[]): Promise<EmbeddingResult> {
     };
   }
 
-  // Process texts in batches to avoid API limits
-  const allEmbeddings: number[][] = [];
-  let totalPromptTokens = 0;
-  let totalTokens = 0;
+  console.log(`Generating embeddings for ${texts.length} texts using resilient OpenAI integration...`);
 
-  for (let i = 0; i < texts.length; i += BATCH_SIZE) {
-    const batch = texts.slice(i, i + BATCH_SIZE);
-    
-    const response = await fetch(OPENAI_API_URL, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        input: batch,
-        model: EMBEDDING_MODEL,
-      }),
-    });
+  try {
+    // Process texts in batches to avoid API limits
+    const allEmbeddings: number[][] = [];
+    let totalPromptTokens = 0;
+    let totalTokens = 0;
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`OpenAI API error: ${response.status} - ${errorText}`);
+    for (let i = 0; i < texts.length; i += BATCH_SIZE) {
+      const batch = texts.slice(i, i + BATCH_SIZE);
+      console.log(`Processing batch ${Math.floor(i / BATCH_SIZE) + 1} with ${batch.length} texts`);
+      
+      const result = await resilientOpenAIEmbeddings(batch, apiKey, EMBEDDING_MODEL);
+      
+      // Sort embeddings by index to maintain order
+      const sortedEmbeddings = result.data
+        .sort((a, b) => a.index - b.index)
+        .map(item => item.embedding);
+      
+      allEmbeddings.push(...sortedEmbeddings);
+      totalPromptTokens += result.usage.prompt_tokens;
+      totalTokens += result.usage.total_tokens;
     }
 
-    const result: OpenAIEmbeddingResponse = await response.json();
-    
-    // Sort embeddings by index to maintain order
-    const sortedEmbeddings = result.data
-      .sort((a, b) => a.index - b.index)
-      .map(item => item.embedding);
-    
-    allEmbeddings.push(...sortedEmbeddings);
-    totalPromptTokens += result.usage.prompt_tokens;
-    totalTokens += result.usage.total_tokens;
-  }
+    console.log(`Successfully generated ${allEmbeddings.length} embeddings. Total tokens: ${totalTokens}`);
 
-  return {
-    embeddings: allEmbeddings,
-    usage: {
-      prompt_tokens: totalPromptTokens,
-      total_tokens: totalTokens,
-    },
-  };
+    return {
+      embeddings: allEmbeddings,
+      usage: {
+        prompt_tokens: totalPromptTokens,
+        total_tokens: totalTokens,
+      },
+    };
+
+  } catch (error) {
+    if (error instanceof Error) {
+      const resilientError = error as ResilientAPIError;
+      console.error(`OpenAI embeddings failed: ${resilientError.type} - ${resilientError.message}`);
+      
+      // Provide specific error messaging based on error type
+      switch (resilientError.type) {
+        case ErrorType.RATE_LIMIT:
+          throw new Error(`OpenAI rate limit exceeded. Please try again in a few minutes.`);
+        case ErrorType.AUTHENTICATION:
+          throw new Error(`OpenAI authentication failed. Please check your API key.`);
+        case ErrorType.TIMEOUT:
+          throw new Error(`OpenAI request timed out. The request may be too large.`);
+        case ErrorType.NETWORK:
+          throw new Error(`Network error connecting to OpenAI. Please check your connection.`);
+        default:
+          throw new Error(`OpenAI embeddings failed: ${resilientError.message}`);
+      }
+    }
+    
+    throw error;
+  }
 }
 
 async function storeProductEmbeddings(

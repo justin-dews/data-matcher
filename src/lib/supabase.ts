@@ -197,7 +197,6 @@ export interface Database {
           trigram_score: number | null
           fuzzy_score: number | null      // Added fuzzy score field
           alias_score: number | null
-          learned_score: number | null    // NEW: Added learned score field
           final_score: number | null
           matched_text: string | null
           reasoning: string | null
@@ -217,7 +216,6 @@ export interface Database {
           trigram_score?: number | null
           fuzzy_score?: number | null     // Added fuzzy score field
           alias_score?: number | null
-          learned_score?: number | null   // NEW: Added learned score field
           final_score?: number | null
           matched_text?: string | null
           reasoning?: string | null
@@ -237,7 +235,6 @@ export interface Database {
           trigram_score?: number | null
           fuzzy_score?: number | null     // Added fuzzy score field
           alias_score?: number | null
-          learned_score?: number | null   // NEW: Added learned score field
           final_score?: number | null
           matched_text?: string | null
           reasoning?: string | null
@@ -457,18 +454,56 @@ export interface Database {
           trigram_score: number
           fuzzy_score: number
           alias_score: number
-          learned_score: number
           final_score: number
           matched_via: string
+        }[]
+      }
+      hybrid_product_match_tiered: {
+        Args: {
+          query_text: string
+          limit_count?: number
+          threshold?: number
+        }
+        Returns: {
+          product_id: string
+          sku: string
+          name: string
+          manufacturer: string | null
+          vector_score: number
+          trigram_score: number
+          fuzzy_score: number
+          alias_score: number
+          final_score: number
+          matched_via: string
+          is_training_match: boolean
         }[]
       }
     }
   }
 }
 
-// Environment variables with fallbacks for development
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://theattidfeqxyaexiqwj.supabase.co'
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0'
+// Environment variables with better error handling
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+
+// Debug environment loading
+if (process.env.NODE_ENV === 'development') {
+  console.log('🔧 Environment check:', {
+    supabaseUrl: supabaseUrl ? 'Set' : 'Missing',
+    supabaseAnonKey: supabaseAnonKey ? 'Set' : 'Missing',
+    nodeEnv: process.env.NODE_ENV
+  })
+}
+
+if (!supabaseUrl || !supabaseAnonKey) {
+  const error = `Missing Supabase environment variables:
+- NEXT_PUBLIC_SUPABASE_URL: ${supabaseUrl ? 'Set' : 'Missing'}
+- NEXT_PUBLIC_SUPABASE_ANON_KEY: ${supabaseAnonKey ? 'Set' : 'Missing'}
+
+Check your .env.local file in project root.`
+  console.error('🚨 Environment Error:', error)
+  throw new Error(error)
+}
 
 // Create a single supabase client for interacting with your database
 export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey)
@@ -479,9 +514,16 @@ export const createSupabaseClient = () => {
 }
 
 // Admin client for server-side operations
+const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+
+if (!serviceRoleKey) {
+  console.warn('⚠️ Missing SUPABASE_SERVICE_ROLE_KEY - admin operations will fail')
+  // Don't throw error here as it might be called on client-side
+}
+
 export const supabaseAdmin = createClient<Database>(
   supabaseUrl,
-  process.env.SUPABASE_SERVICE_ROLE_KEY || supabaseAnonKey,
+  serviceRoleKey || supabaseAnonKey, // Fallback to anon key if service role not available
   {
     auth: {
       autoRefreshToken: false,

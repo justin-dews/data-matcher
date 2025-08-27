@@ -2,11 +2,15 @@
 
 import { useState } from 'react'
 import { useAuth } from '@/app/providers'
-import { BellIcon, UserCircleIcon } from '@heroicons/react/24/outline'
+import { BellIcon, UserCircleIcon, Bars3Icon } from '@heroicons/react/24/outline'
 import { Menu, Transition } from '@headlessui/react'
 import { Fragment } from 'react'
 
-export default function Header() {
+interface HeaderProps {
+  onMenuClick: () => void
+}
+
+export default function Header({ onMenuClick }: HeaderProps) {
   const { user, profile, organization, signOut } = useAuth()
   const [notifications, setNotifications] = useState(0)
 
@@ -16,9 +20,20 @@ export default function Header() {
 
   return (
     <header className="bg-white shadow-sm border-b border-gray-200">
-      <div className="flex items-center justify-between h-16 px-6">
+      <div className="flex items-center justify-between h-16 px-4 sm:px-6">
+        {/* Mobile menu button */}
+        <div className="lg:hidden">
+          <button
+            type="button"
+            className="p-2 rounded-md text-gray-400 hover:text-gray-500 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            onClick={onMenuClick}
+          >
+            <Bars3Icon className="h-6 w-6" />
+          </button>
+        </div>
+
         {/* Search bar - placeholder for future implementation */}
-        <div className="flex-1 max-w-md">
+        <div className="flex-1 max-w-md ml-4 lg:ml-0">
           <div className="relative">
             <input
               type="text"

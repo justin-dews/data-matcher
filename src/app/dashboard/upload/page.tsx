@@ -160,6 +160,48 @@ export default function UploadPage() {
 
       console.log('✅ Line items inserted successfully')
 
+      // AUTO-GENERATE MATCHES: This is the root cause fix!
+      // Instead of requiring users to manually click "Generate Matches",
+      // we automatically create matches for all uploaded line items
+      console.log('🎯 Auto-generating matches for uploaded line items...')
+      setProgress(85) // Show progress during match generation
+      
+      try {
+        const matchResponse = await fetch('/api/generate-matches', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            organizationId: profile.organization_id,
+            userId: user.id
+          })
+        })
+
+        if (matchResponse.ok) {
+          const matchResult = await matchResponse.json()
+          if (matchResult.success) {
+            console.log(`✅ Auto-generated ${matchResult.generatedCount} matches out of ${matchResult.totalProcessed} line items`)
+            
+            // Log specific training matches found
+            if (matchResult.results) {
+              const trainingMatches = matchResult.results.filter((r: any) => r.matchedVia === 'training_exact')
+              if (trainingMatches.length > 0) {
+                console.log('🎯 Found exact training matches:')
+                trainingMatches.forEach((match: any) => {
+                  console.log(`  "${match.lineItemText}" → ${match.matchedProduct} (score: ${match.score})`)
+                })
+              }
+            }
+          } else {
+            console.warn('⚠️ Match generation failed:', matchResult.error)
+          }
+        } else {
+          console.warn('⚠️ Match generation request failed:', matchResponse.status)
+        }
+      } catch (matchError) {
+        console.error('⚠️ Error during automatic match generation:', matchError)
+        // Don't fail the upload if match generation fails
+      }
+
       setProgress(100)
       
       // Store document data with full parsed line items for display
@@ -169,12 +211,12 @@ export default function UploadPage() {
         lineItems: parseData.lineItems // Use the full parsed data with all fields
       })
 
-      // Update document status
+      // Update document status to include match generation
       console.log('📊 Updating document status...')
       await supabase
         .from('documents')
         .update({ 
-          status: 'parsed',
+          status: 'processed', // Changed from 'parsed' to 'processed' since we now include matching
           parse_result: { lineItems: parseData.lineItems, metadata: parseData.metadata }
         })
         .eq('id', documentRecord.id)
@@ -186,16 +228,17 @@ export default function UploadPage() {
         .insert({
           organization_id: profile.organization_id,
           user_id: user.id,
-          action: 'parse_complete',
+          action: 'document_processed', // Changed from 'parse_complete' to reflect full processing
           resource_type: 'document',
           resource_id: documentRecord.id,
           metadata: {
             filename: file.name,
-            line_count: parseData.lineItems.length
+            line_count: parseData.lineItems.length,
+            auto_matched: true // Flag to indicate automatic matching was performed
           }
         })
 
-      console.log('Upload and parsing completed successfully')
+      console.log('🎉 Upload, parsing, and automatic matching completed successfully!')
 
     } catch (error) {
       console.error('Parse error:', error)

@@ -1,27 +1,34 @@
 'use client'
 
+import { memo } from 'react'
 import { 
   CheckIcon, 
   XMarkIcon, 
   BoltIcon,
-  ClipboardDocumentListIcon
+  ClipboardDocumentListIcon,
+  ArrowPathIcon
 } from '@heroicons/react/24/outline'
 
 interface BulkActionToolbarProps {
   selectedCount: number
   onApproveAll: () => void
   onRejectAll: () => void
+  onResetAll?: () => void
   onAutoMatch: () => void
   disabled?: boolean
+  rejectedCount?: number
 }
 
-export default function BulkActionToolbar({
+const BulkActionToolbar = memo(({
+
   selectedCount,
   onApproveAll,
   onRejectAll,
+  onResetAll,
   onAutoMatch,
-  disabled = false
-}: BulkActionToolbarProps) {
+  disabled = false,
+  rejectedCount = 0
+}: BulkActionToolbarProps) => {
   return (
     <div className="flex items-center space-x-3">
       {/* Selection counter */}
@@ -70,6 +77,21 @@ export default function BulkActionToolbar({
         </button>
       </div>
 
+      {/* Reset rejected button - show when rejected items exist */}
+      {rejectedCount > 0 && onResetAll && (
+        <div className="border-l border-gray-300 h-6 pl-3">
+          <button
+            onClick={onResetAll}
+            disabled={disabled}
+            className="inline-flex items-center px-3 py-2 border border-gray-300 shadow-sm text-sm leading-4 font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Reset all rejected items back to pending for re-matching"
+          >
+            <ArrowPathIcon className="h-4 w-4 mr-2" />
+            Reset Rejected ({rejectedCount})
+          </button>
+        </div>
+      )}
+
       {/* Keyboard shortcuts hint */}
       <div className="hidden lg:block text-xs text-gray-500 ml-4">
         <div className="flex items-center space-x-4">
@@ -89,8 +111,17 @@ export default function BulkActionToolbar({
             <kbd className="px-2 py-1 bg-gray-100 border border-gray-300 rounded text-xs">M</kbd>
             <span>Auto-Match</span>
           </div>
+          {rejectedCount > 0 && onResetAll && (
+            <div className="flex items-center space-x-1">
+              <kbd className="px-2 py-1 bg-gray-100 border border-gray-300 rounded text-xs">Z</kbd>
+              <span>Reset Rejected</span>
+            </div>
+          )}
         </div>
       </div>
     </div>
   )
-}
+})
+BulkActionToolbar.displayName = 'BulkActionToolbar'
+
+export default BulkActionToolbar

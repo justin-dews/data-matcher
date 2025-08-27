@@ -14,11 +14,26 @@ export async function POST(request: NextRequest) {
 
     console.log('💾 Creating document record via API:', { user_id, filename, file_path })
 
+    // Get user's organization ID from profile
+    const { data: profile, error: profileError } = await supabaseAdmin
+      .from('profiles')
+      .select('organization_id')
+      .eq('id', user_id)
+      .single()
+      
+    if (profileError || !profile) {
+      console.error('❌ Failed to get user profile:', profileError)
+      return NextResponse.json(
+        { error: 'Failed to get user profile' },
+        { status: 400 }
+      )
+    }
+
     // Create document using admin client to bypass RLS
     const { data, error } = await supabaseAdmin
       .from('documents')
       .insert({
-        organization_id: '00000000-0000-0000-0000-000000000001', // Default test org
+        organization_id: profile.organization_id,
         user_id,
         filename,
         file_path,
